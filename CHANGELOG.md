@@ -1,3 +1,30 @@
+### 未发布(适配 DSH 0.2.x / 会话格式 v4)
+
+- **【宿主侧变更·非本插件缺陷】peer 范围不含 `0.2`**:DSH 0.2.x 的 `@deepseek-ai/dsh-*` 包都是 `0.2.x`,宿主的
+  插件兼容判定(`semver.satisfies(..., { includePrerelease: true })`)不通过 ⇒ **整个 bundle 被跳过**。
+  六个 dsh peer 改为 `^0.1.0-rc.6 || ^0.2.0-rc.1`。
+- **【宿主侧变更·非本插件缺陷】会话格式 v4**:`tool/result` 为 `role: 'tool'`、`system/message` source 为
+  `system-prompt`、新增 surface 类型 `developer/message`、压缩检查点 source 为 `{kind:'compact-checkpoint'}`。
+  旧版 `dsh-log-contract` 的写前校验按 v3 形状检查整份日志 ⇒ v4 会话上编辑/撤回/重新生成**全部 `marker-rejected`**。
+  需要支持 v4 的 `dsh-log-contract`([dsh-log-contract#3](https://github.com/yamingmou/dsh-log-contract/pull/3))。
+- **surface 词表**:`lib/client.js`、`lib/version-index.js`、`lib/summary-gate.js` 改为官方五类
+  (加 `system/message`、`developer/message`),与 `dsh-session/surface` 的 `SURFACE_EVENT_TYPES` 一致。
+- **压缩检查点**:`isCompactCheckpointSource` / 客户端 `isCompactCheckpoint` 两种 source 都认 ⇒ v4 的检查点同样不给 ✎。
+- **【宿主侧变更·非本插件缺陷】编辑/撤回行被折叠**:0.2 的 ui-chat 会折叠已完成回合的过程行 —— 位于该回合的节点,
+  除 `TURN_PROCESS_INDEPENDENT_KINDS`(`user`、`turn-tail` 等固定种类)外一律隐藏。插件的 `user-actions` /
+  `retrace-reference` / `recall-marker` 继承了所匹配消息的回合 location ⇒ 在紧凑/标准/详细视图里被折掉,
+  用户消息下看不到编辑与撤回。三者的 location 改为 `unresolved`(排序本来就按 `anchorSeq`)。
+- **边界摘要 / 摘要闸**:`roleOf` 报 `system` / `developer`(此前摘要闸把它们一律记成 `tool`);`eventText` 读两者的 `data.message.content`。
+- **`scripts/check-host-contract.mjs`**:
+  - asar 读取器的数据起点改为 `8 + header pickle size`(原 `17 + JSON 长度` 只在 JSON 恰需 1 字节对齐填充时成立,
+    在 0.2.0 的 asar 上整体读偏 ⇒ 每条检查都报"文件不在 asar");
+  - 宿主根自动探测(0.2.x 把运行时放在 `/dsh/node_modules`);Windows 默认 asar 路径;
+  - 0.2.x 的 `Inbox` 只是类型声明(无 `lib/types/inbox.js`、也无 `hasPending`),三条声明类型检查限定 0.1.x 布局,
+    运行时 `ReactLoopInbox` 的三条检查照常覆盖。DSH Desktop 0.2.0-rc.2 上:80 ok / 0 failed / 3 skipped。
+- **测试**:新增 `test/session-format-v4.test.js`(surface 词表、检查点 predicate、role;以及接真实
+  `dsh-log-contract` 的 v4 写前守卫:编辑早期消息 / 撤回 / 重新生成通过,非法区间与缺失 provenance 被拒 ——
+  后者在契约与宿主都具备 v4 语义时才跑,否则显式跳过)。
+
 ### 0.4.28(2026-09-14 · 宿主契约漂移修复 + 版本/分叉视图可解释化 + 客户端 O(K·N²) 消除)
 
 > **注**：`0.4.27` 曾短暂发布后**撤回**（`npm dist-tag` 已退回 `0.4.26`，`0.4.27` 已标记 deprecated）。

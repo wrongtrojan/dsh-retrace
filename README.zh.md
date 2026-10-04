@@ -234,6 +234,17 @@ Client 半区会依据包内 `dsh.client` 元数据被自动打包进 Web 客户
 
 本节的目的：让你能分清 **宿主侧破坏性变更** 与 **插件侧缺陷**。提 issue 前请先看这节。
 
+### 0.2.x 适配（会话格式 v4）—— *宿主侧变更*
+
+1. **peer 范围。** DSH 0.2.x 的 `@deepseek-ai/dsh-*` 包都是 `0.2.x`；宿主按 peer 范围判定兼容性，
+   范围不含 `0.2` 时**整个 bundle 被跳过**（插件"装上了但不出现"）。peer 现为 `^0.1.0-rc.6 || ^0.2.0-rc.1`。
+2. **会话格式 v4。** `tool/result` 改为 `role: 'tool'`（无 `tool-result` 包装块），`system/message` 的 source 为
+   `system-prompt`，新增 surface 类型 `developer/message`，压缩检查点 source 为 `{kind:'compact-checkpoint'}`。
+   旧版 `dsh-log-contract` 按 v3 形状检查整份日志 ⇒ v4 会话上**每次编辑/撤回/重新生成都被判 `marker-rejected`**。
+   → **依赖说明：** 需要支持 v4 的 `dsh-log-contract`（[dsh-log-contract#3](https://github.com/yamingmou/dsh-log-contract/pull/3)）。
+3. 插件侧随之更新：surface 词表为官方五类；压缩检查点两种 source 都认（v4 的检查点同样不给 ✎）；
+   边界摘要给 system / developer 报正确的 role；编辑/撤回行不再被 0.2 的已完成回合折叠藏起来。
+
 ### `0.4.26` 适配的宿主侧破坏性变更 —— *不是本插件造成的*
 
 1. **`@deepseek-ai/dsh-session` 把 `decodeStorageRecord` 从公开导出面拿掉了（`0.1.5-rc.1`；函数仍在内部模块里，但不再从包根导出、exports map 子路径也不可达）。**

@@ -262,6 +262,23 @@ the symptom is usually a failed boot, not a wrong-looking feature.
 This section exists so you can tell **host-side breakage** from **plugin-side bugs**.
 Read it before filing an issue.
 
+### DSH 0.2.x (session format v4) — *host-side changes*
+
+1. **Peer ranges.** Every `@deepseek-ai/dsh-*` package in DSH 0.2.x is `0.2.x`. The host checks
+   plugin compatibility against peer ranges, so a range without `0.2` makes it **skip the whole
+   bundle** (installed, but never shows up). The peers are now `^0.1.0-rc.6 || ^0.2.0-rc.1`.
+2. **Session format v4.** `tool/result` is now `role: 'tool'` (no `tool-result` wrapper block),
+   `system/message` uses source `system-prompt`, `developer/message` is a new surface type, and
+   compaction checkpoints use `{kind:'compact-checkpoint'}`. An older `dsh-log-contract` checks the
+   whole log against v3 shapes, so on a v4 session **every edit / recall / regenerate is
+   `marker-rejected`**.
+   → **Dependency note:** needs a `dsh-log-contract` with v4 support
+   ([dsh-log-contract#3](https://github.com/yamingmou/dsh-log-contract/pull/3)).
+3. Plugin side, accordingly: the surface vocabulary is the official five types; both checkpoint
+   sources are recognised (v4 checkpoints still get no ✎); boundary digests report the right
+   role for system / developer messages; the edit/recall row is no longer folded away with a
+   completed turn's process rows.
+
 ### Host-side breaking changes that `0.4.26` adapts to — *not caused by this plugin*
 
 1. **`@deepseek-ai/dsh-session` dropped `decodeStorageRecord` from its public export surface (in `0.1.5-rc.1`; the function still exists internally but is no longer exported from the package root and is unreachable via the exports map).**

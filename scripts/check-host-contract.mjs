@@ -11,8 +11,11 @@
  * every member that must NOT exist must stay absent.
  *
  * Reads the INSTALLED app.asar directly (no network, no profile changes).
- *   ASAR: /Applications/DSH Desktop.app/Contents/Resources/app.asar
+ *   ASAR: /Applications/DSH Desktop.app/Contents/Resources/app.asar (macOS)
+ *         %LOCALAPPDATA%\Programs\DeepSeek Harness\resources\app.asar (Windows)
  *         (override with DSH_ASAR=/path/to/app.asar)
+ *   Host packages sit under `/node_modules` (0.1.x) or `/dsh/node_modules`
+ *   (0.2.x); the root is picked by where dsh-session lives (see HOST_ROOTS).
  *
  * Exit codes: 0 = all checks pass (or the asar is absent → explicit SKIP),
  *             1 = contract drift (drift/migration hint printed per failure).
@@ -24,7 +27,10 @@ import { existsSync, openSync, readSync, closeSync, realpathSync, readdirSync, s
 import { resolve, dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ASAR = process.env.DSH_ASAR || '/Applications/DSH Desktop.app/Contents/Resources/app.asar'
+const DEFAULT_ASAR = process.platform === 'win32' && process.env.LOCALAPPDATA
+  ? join(process.env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness', 'resources', 'app.asar')
+  : '/Applications/DSH Desktop.app/Contents/Resources/app.asar'
+const ASAR = process.env.DSH_ASAR || DEFAULT_ASAR
 /** Repo root (for the plugin-side invariant; this script lives in scripts/). */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -188,7 +194,9 @@ export function scanPluginFiles(root, { dir, skip = [], re }) {
 
 
 // ---------------------------------------------------------------------------
-// Minimal asar reader (header: u32LE@12 = header size; data starts at 17 + it)
+// Minimal asar reader (header: u32LE@4 = header pickle size, u32LE@12 = JSON
+// length; data starts at 8 + pickle size — the pickle pads the JSON to 4 bytes,
+// so `16 + JSON length` is only right when that padding happens to be 1 byte)
 // ---------------------------------------------------------------------------
 function openAsar(file) {
   const fd = openSync(file, 'r')
@@ -198,7 +206,7 @@ function openAsar(file) {
   const headerBuf = Buffer.alloc(headerSize)
   readSync(fd, headerBuf, 0, headerSize, 16)
   const tree = JSON.parse(headerBuf.toString('utf8').replace(/\0+$/, ''))
-  const dataStart = 17 + headerSize
+  const dataStart = 8 + head.readUInt32LE(4)
   const entries = new Map()
   const walk = (node, prefix) => {
     for (const [name, value] of Object.entries(node.files || {})) {
@@ -209,6 +217,7 @@ function openAsar(file) {
   }
   walk(tree, '')
   return {
+    has(path) { return entries.has(path) },
     read(path) {
       const entry = entries.get(path)
       if (!entry) return null
@@ -221,8 +230,17 @@ function openAsar(file) {
 }
 
 // ---------------------------------------------------------------------------
-// Host file paths inside the asar
+// Host file paths inside the asar (relative to the host root)
 // ---------------------------------------------------------------------------
+/** Candidate host roots, newest layout first: 0.2.x nests the runtime under `/dsh`. */
+const HOST_ROOTS = ['/dsh', '']
+const SESSION_PKG = '/node_modules/@deepseek-ai/dsh-session/package.json'
+
+/** The asar prefix the host packages live under, or null when none matches. */
+export function hostRootOf(reader) {
+  return HOST_ROOTS.find((root) => reader.has(`${root}${SESSION_PKG}`)) ?? null
+}
+
 const SESSION = '/node_modules/@deepseek-ai/dsh-session/lib/index.js'
 const SESSION_TYPES = '/node_modules/@deepseek-ai/dsh-session/lib/types/index.js'
 const DSH_AGENT = '/node_modules/@deepseek-ai/dsh-agent/lib/index.js'
@@ -268,6 +286,8 @@ const CLIENT_RUNNER = '/node_modules/@deepseek-ai/dsh-cordis-client-runner/lib/c
 //   member        → match by declaration form (declaresMember) AND bolt-on form
 //                   (declaresMemberBoltOn, whole file); absent-only
 //   plugin        → scan the plugin's own tree (see scanPluginFiles) instead of asar
+//   onlyRoot      → evaluate only under this host root (see HOST_ROOTS); other
+//                   layouts print an explicit SKIP that is never counted as ok
 //
 // COUNT DISCIPLINE: the total is `CHECKS.length`. The breakdown is printed in the
 // summary as `N present + M absent`. Do NOT count with `grep` on the `kind:` field:
@@ -319,9 +339,12 @@ const CHECKS = [
   // is the parallel declaration, while the RUNTIME object is ReactLoopInbox in
   // dsh-agent-loop (this.inbox = new ReactLoopInbox(...)). They agree today; pin
   // both so a rename in either place fails loudly.
-  { kind: 'present', id: 'inbox.hasPending', file: INBOX, re: /get hasPending\(\)/, what: 'Inbox.hasPending (declared type)', usedBy: 'lib/close-guard.js:42' },
-  { kind: 'present', id: 'inbox.nextTurn', file: INBOX, re: /get nextTurn\(\)/, what: 'Inbox.nextTurn (declared type)', usedBy: 'lib/close-guard.js:44' },
-  { kind: 'present', id: 'inbox.nextStep', file: INBOX, re: /get nextStep\(\)/, what: 'Inbox.nextStep (declared type)', usedBy: 'lib/close-guard.js:45' },
+  // 0.2.x ships the declared Inbox as a type-only interface (no lib/types/inbox.js,
+  // and no hasPending on it); `onlyRoot: ''` limits these to the 0.1.x layout, the
+  // runtime ReactLoopInbox assertions below cover both.
+  { kind: 'present', id: 'inbox.hasPending', file: INBOX, onlyRoot: '', re: /get hasPending\(\)/, what: 'Inbox.hasPending (declared type)', usedBy: 'lib/close-guard.js:42' },
+  { kind: 'present', id: 'inbox.nextTurn', file: INBOX, onlyRoot: '', re: /get nextTurn\(\)/, what: 'Inbox.nextTurn (declared type)', usedBy: 'lib/close-guard.js:44' },
+  { kind: 'present', id: 'inbox.nextStep', file: INBOX, onlyRoot: '', re: /get nextStep\(\)/, what: 'Inbox.nextStep (declared type)', usedBy: 'lib/close-guard.js:45' },
   { kind: 'present', id: 'agentLoopInbox.hasPending', file: AGENT_LOOP, re: /get hasPending\(\)/, what: 'ReactLoopInbox.hasPending (runtime object)', usedBy: 'lib/close-guard.js:42' },
   { kind: 'present', id: 'agentLoopInbox.nextTurn', file: AGENT_LOOP, re: /get nextTurn\(\)/, what: 'ReactLoopInbox.nextTurn (runtime object)', usedBy: 'lib/close-guard.js:44' },
   { kind: 'present', id: 'agentLoopInbox.nextStep', file: AGENT_LOOP, re: /get nextStep\(\)/, what: 'ReactLoopInbox.nextStep (runtime object)', usedBy: 'lib/close-guard.js:45' },
@@ -451,16 +474,23 @@ function main() {
     }
     const reader = openAsar(ASAR)
     try {
+      const root = hostRootOf(reader) ?? ''
       const desktop = readPackageVersion(reader, '/package.json')
-      const session = readPackageVersion(reader, '/node_modules/@deepseek-ai/dsh-session/package.json')
+      const session = readPackageVersion(reader, `${root}${SESSION_PKG}`)
       console.log(`host-contract: DSH Desktop ${desktop} · @deepseek-ai/dsh-session ${session}`)
-      console.log(`host-contract: asar = ${ASAR}`)
+      console.log(`host-contract: asar = ${ASAR}${root ? ` (host root ${root})` : ''}`)
       console.log('')
 
       let failed = 0
+      let skipped = 0
       const presentCount = CHECKS.filter((c) => c.kind === 'present').length
       const absentCount = CHECKS.length - presentCount
       for (const check of CHECKS) {
+        if (check.onlyRoot !== undefined && check.onlyRoot !== root) {
+          skipped += 1
+          console.log(`⏭️  ${check.id} — SKIP(仅适用于宿主根 ${JSON.stringify(check.onlyRoot)}) — ${check.what}`)
+          continue
+        }
         // ── plugin-side invariant: scans the LOCAL plugin tree, not the asar ──
         if (check.plugin) {
           let hits
@@ -486,7 +516,7 @@ function main() {
           continue
         }
 
-        const raw = reader.read(check.file)
+        const raw = reader.read(`${root}${check.file}`)
         if (raw === null) {
           failed += 1
           console.log(`❌ ${check.id} — 宿主文件不在 asar: ${check.file}`)
@@ -538,12 +568,13 @@ function main() {
       }
 
       console.log('')
-      const breakdown = `${presentCount} present + ${absentCount} absent`
+      const breakdown = `${presentCount} present + ${absentCount} absent${skipped ? `, ${skipped} skipped` : ''}`
+      const ok = CHECKS.length - skipped - failed
       if (failed > 0) {
-        console.log(`host-contract: ${CHECKS.length - failed} ok, ${failed} FAILED (${breakdown}) —— 宿主契约漂移,先修再发`)
+        console.log(`host-contract: ${ok} ok, ${failed} FAILED (${breakdown}) —— 宿主契约漂移,先修再发`)
         return 1
       }
-      console.log(`host-contract: ${CHECKS.length} ok, 0 failed (${breakdown}) —— 宿主契约面与审计基线一致`)
+      console.log(`host-contract: ${ok} ok, 0 failed (${breakdown}) —— 宿主契约面与审计基线一致`)
       return 0
     } finally {
       reader.close()
